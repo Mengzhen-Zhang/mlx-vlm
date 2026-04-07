@@ -204,11 +204,11 @@ class Attention(nn.Module):
         if self.is_kv_shared_layer and cache is not None:
             state = cache.state
             keys, values = state[0], state[1]
-            # Snapshot via + 0 so cache.update_and_fetch cannot mutate this
-            # local alias under batched caches where cache.offset is an
-            # mx.array (mx.array.__iadd__ is in place; int.__iadd__ rebinds,
-            # so + 0 is safe for both).
-            offset = cache.offset + 0
+            # Layer 0 has already run update_and_fetch on this shared cache, natively incrementing 
+            # its offset tracking (e.g. 447 -> 448). To perfectly align RoPE indexing for queries 
+            # at this mathematical step, we must rigorously subtract the current sequence length.
+            # This also implicitly copies the tracked mx.array, replacing the upstream `+ 0` hack.
+            offset = cache.offset - queries.shape[1]
         else:
             if cache is not None:
                 offset = cache.offset + 0
