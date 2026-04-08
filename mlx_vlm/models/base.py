@@ -194,6 +194,31 @@ def scaled_dot_product_attention(
     if isinstance(cache, TurboQuantKVCache):
         if sinks is not None:
             raise ValueError("TurboQuant KV cache does not support attention sinks.")
+        
+        try:
+            import turbo_kernels
+            
+            # Pre-rotate queries along the dimension alignment for key codebook parsing (Linearity)
+            q_rot = cache.key_codec._rotate_forward(queries)
+            
+            # Perform Flash Attention purely relying on bit-shifted pointers mapped natively natively inside FP16 Softmax ranges
+            out_rot = turbo_kernels.quant_flash_attention(
+                q_rot,
+                cache._unwrap(keys).norms,
+                cache._unwrap(keys).packed,
+                cache.key_codec.codebook,
+                cache._unwrap(values).norms,
+                cache._unwrap(values).packed,
+                cache.value_codec.codebook,
+                scale=scale,
+                mask=mask
+            )
+            # Post-rotate the resulting Values array relying on identical associativity theorem (O * R_inv)
+            return cache.value_codec._rotate_inverse(out_rot)
+            
+        except ImportError:
+            pass
+
         if queries.shape[-2] == 1:
             return cache.decode_attention(
                 queries,
@@ -209,8 +234,9 @@ def scaled_dot_product_attention(
             scale=scale,
             mask=mask,
         )
-        if result is not None:
-            return result
+        
+        dequantized_keys, dequantized_values = cache.dequantize(keys, values)
+
         dequantized_keys, dequantized_values = cache.dequantize(keys, values)
         return mx.fast.scaled_dot_product_attention(
             queries,
